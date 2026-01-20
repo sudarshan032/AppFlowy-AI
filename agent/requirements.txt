@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+langchain
+langchain-community
+python-dotenv
+sqlalchemy
+alembic
+psycopg2-binary
+qdrant-client
+nomic
+ollama
+pytest
+httpx
+pydantic>=2
+watchdog

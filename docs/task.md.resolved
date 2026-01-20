@@ -1,0 +1,39 @@
+# AppFlowy Native AI Integration Task List
+
+- [x] Phase 1: Environment Setup & Build Verification
+    - [x] Install Rust toolchain
+    - [x] Build AppFlowy Rust components via `cargo-make`
+- [x] Phase 2: Global Frontend Shortcut (Cmd+J)
+    - [x] Implement Ctrl+J/Cmd+J shortcut event in Flutter
+    - [x] Register shortcut to trigger AI panel
+- [x] Phase 3: Rust Backend Bridge
+    - [x] Create [agent_bridge.rs](file:///Users/siddh/.gemini/antigravity/playground/volatile-belt/appflowy/frontend/rust-lib/flowy-ai/src/agent_bridge.rs) for API communication
+    - [x] Intercept `stream_complete` and redirect to Agent API
+- [x] Phase 4: Context Extraction & Action Handling
+    - [x] Extract context (objectId, workspaceId) in Rust
+    - [x] Implement Flutter-side action handlers in [AiWriterCubit](file:///Users/siddh/.gemini/antigravity/playground/volatile-belt/appflowy/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/operations/ai_writer_cubit.dart#26-803)
+    - [x] Map Agent actions to document operations (e.g., `insert_block`)
+- [x] Phase 7: Ground Truth Verification (🔥)
+    - [x] Locate active `EditorWidget` implementation
+    - [x] Inject 1s-delayed debug mutation via `BlocListener` (Success sensed)
+    - [ ] Verify block appears in UI
+- [x] Phase 8: Strict Editor Binding
+    - [x] Audit [AiWriterCubit](file:///Users/siddh/.gemini/antigravity/playground/volatile-belt/appflowy/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/operations/ai_writer_cubit.dart#26-803) instantiation for instance drift
+    - [x] Bind Cubit to the mounted [EditorState](file:///Users/siddh/.gemini/antigravity/playground/volatile-belt/appflowy/frontend/appflowy_flutter/lib/plugins/document/application/document_bloc.dart#129-140) from `EditorBloc`
+    - [x] Verify [AiWriterCubit](file:///Users/siddh/.gemini/antigravity/playground/volatile-belt/appflowy/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/operations/ai_writer_cubit.dart#26-803) hash code matches UI [EditorState](file:///Users/siddh/.gemini/antigravity/playground/volatile-belt/appflowy/frontend/appflowy_flutter/lib/plugins/document/application/document_bloc.dart#129-140)
+- [/] **Phase 9: Flutter SDK Resolution (CRITICAL)**
+    - [ ] Downgrade Flutter to 3.27.4
+    - [ ] Clean all caches
+    - [ ] Fix dependency conflicts
+    - [ ] Build AppFlowy Desktop
+- [ ] Phase 10: Litmus Test Verification
+    - [ ] Confirm "🔥 REAL EDITOR CONFIRMED 🔥" appears
+    - [ ] Remove test code after success
+- [ ] Phase 11: Agent → Editor Wiring
+    - [ ] Enforce single EditorState ownership
+    - [ ] Replace test inserts with agent actions
+- [ ] Phase 12: Real Database Creation
+    - [ ] Database creation transaction
+    - [ ] Sidebar visibility
+    - [ ] Property mapping
+    - [ ] Record insertion
