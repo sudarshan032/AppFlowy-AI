@@ -5,3 +5,4 @@ __pycache__/
 *.log
 venv/
 FIX_AFTER_MOVE.md
+CLAUDE.md
