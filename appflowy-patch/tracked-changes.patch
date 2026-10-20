@@ -1,0 +1,644 @@
+diff --git a/frontend/appflowy_flutter/.metadata b/frontend/appflowy_flutter/.metadata
+index 7da2cb5..644060a 100644
+--- a/frontend/appflowy_flutter/.metadata
++++ b/frontend/appflowy_flutter/.metadata
+@@ -1,11 +1,11 @@
+ # This file tracks properties of this Flutter project.
+ # Used by Flutter tool to assess capabilities and perform upgrades etc.
+ #
+-# This file should be version controlled.
++# This file should be version controlled and should not be manually edited.
+ 
+ version:
+-  revision: 682aa387cfe4fbd71ccd5418b2c2a075729a1c66
+-  channel: unknown
++  revision: "3b62efc2a3da49882f43c372e0bc53daef7295a6"
++  channel: "stable"
+ 
+ project_type: app
+ 
+@@ -13,11 +13,11 @@ project_type: app
+ migration:
+   platforms:
+     - platform: root
+-      create_revision: 682aa387cfe4fbd71ccd5418b2c2a075729a1c66
+-      base_revision: 682aa387cfe4fbd71ccd5418b2c2a075729a1c66
+-    - platform: android
+-      create_revision: 682aa387cfe4fbd71ccd5418b2c2a075729a1c66
+-      base_revision: 682aa387cfe4fbd71ccd5418b2c2a075729a1c66
++      create_revision: 3b62efc2a3da49882f43c372e0bc53daef7295a6
++      base_revision: 3b62efc2a3da49882f43c372e0bc53daef7295a6
++    - platform: web
++      create_revision: 3b62efc2a3da49882f43c372e0bc53daef7295a6
++      base_revision: 3b62efc2a3da49882f43c372e0bc53daef7295a6
+ 
+   # User provided section
+ 
+diff --git a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_page.dart b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_page.dart
+index 404f087..485e0de 100644
+--- a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_page.dart
++++ b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_page.dart
+@@ -352,7 +352,7 @@ class _AppFlowyEditorPageState extends State<AppFlowyEditorPage>
+     final isEditable =
+         context.read<PageAccessLevelBloc?>()?.state.isEditable ?? true;
+ 
+-    final editor = Directionality(
++    Widget editor = Directionality(
+       textDirection: textDirection,
+       child: AppFlowyEditor(
+         editorState: widget.editorState,
+diff --git a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/ai_writer_toolbar_item.dart b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/ai_writer_toolbar_item.dart
+index 70d627d..aaec9e1 100644
+--- a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/ai_writer_toolbar_item.dart
++++ b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/ai_writer_toolbar_item.dart
+@@ -8,6 +8,7 @@ import 'package:appflowy_ui/appflowy_ui.dart';
+ import 'package:easy_localization/easy_localization.dart';
+ import 'package:flowy_infra_ui/flowy_infra_ui.dart';
+ import 'package:flutter/material.dart';
++import 'package:appflowy/services/ai_plugin_service.dart';
+ 
+ import 'operations/ai_writer_entities.dart';
+ 
+@@ -81,7 +82,7 @@ class _AiWriterToolbarActionListState extends State<AiWriterToolbarActionList> {
+         actionWrapper(AiWriterCommand.improveWriting),
+         actionWrapper(AiWriterCommand.userQuestion),
+         actionWrapper(AiWriterCommand.fixSpellingAndGrammar),
+-        // actionWrapper(AiWriterCommand.summarize),
++        actionWrapper(AiWriterCommand.summarize),
+         actionWrapper(AiWriterCommand.explain),
+         divider(),
+         actionWrapper(AiWriterCommand.makeLonger),
+@@ -213,11 +214,51 @@ class ImproveWritingButton extends StatelessWidget {
+ }
+ 
+ void _insertAiNode(EditorState editorState, AiWriterCommand command) async {
++  debugPrint('DEBUG: _insertAiNode called with command: $command');
+   final selection = editorState.selection?.normalized;
+   if (selection == null) {
++    debugPrint('DEBUG: Selection is null');
+     return;
+   }
+ 
++  // Intercept Summarize and Improve Writing commands to use Python AI Plugin
++  if (command == AiWriterCommand.summarize || command == AiWriterCommand.improveWriting) {
++    debugPrint('DEBUG: Intercepting command $command');
++    try {
++      final text = editorState.getTextInSelection(selection);
++      debugPrint('DEBUG: Selection text length: ${text.length}');
++      if (text.isEmpty) {
++         debugPrint('DEBUG: Text is empty, returning');
++         return;
++      }
++      
++      final joinedText = text.join('\n');
++      String result;
++      
++      if (command == AiWriterCommand.summarize) {
++        result = await AIPluginService.summarize(joinedText);
++      } else {
++        result = await AIPluginService.improveWriting(joinedText);
++      }
++      
++      final transaction = editorState.transaction
++        ..replaceText(
++          editorState.getNodeAtPath(selection.start.path)!, 
++          selection.startIndex, 
++          selection.length, 
++          result
++        );
++        
++      await editorState.apply(transaction);
++      return;
++    } catch (e, stack) {
++      // Fallback or error handling
++      debugPrint('AI Plugin Error (Falling back to legacy): $e\n$stack');
++      // showToastNotification(message: 'AI Plugin Failed: $e'); // Optional: notify user
++    }
++  }
++
++  // Default behavior (use Rust AI backend)
+   final transaction = editorState.transaction
+     ..insertNode(
+       selection.end.path.next,
+diff --git a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/operations/ai_writer_cubit.dart b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/operations/ai_writer_cubit.dart
+index c7e6d2c..9ac86b1 100644
+--- a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/operations/ai_writer_cubit.dart
++++ b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/operations/ai_writer_cubit.dart
+@@ -1,4 +1,5 @@
+ import 'dart:async';
++import 'dart:convert';
+ 
+ import 'package:appflowy/ai/ai.dart';
+ import 'package:appflowy/startup/startup.dart';
+@@ -6,6 +7,7 @@ import 'package:appflowy/workspace/application/view/view_service.dart';
+ import 'package:appflowy_backend/dispatch/dispatch.dart';
+ import 'package:appflowy_backend/log.dart';
+ import 'package:appflowy_backend/protobuf/flowy-ai/protobuf.dart';
++import 'package:appflowy_backend/protobuf/flowy-folder/view.pbenum.dart';
+ import 'package:appflowy_editor/appflowy_editor.dart';
+ import 'package:appflowy_result/appflowy_result.dart';
+ import 'package:bloc/bloc.dart';
+@@ -35,7 +37,7 @@ class AiWriterCubit extends Cubit<AiWriterState> {
+         super(IdleAiWriterState());
+ 
+   final String documentId;
+-  final EditorState editorState;
++  EditorState editorState;
+   final AIRepository _aiService;
+   final MarkdownTextRobot _textRobot;
+   final void Function()? onCreateNode;
+@@ -47,6 +49,17 @@ class AiWriterCubit extends Cubit<AiWriterState> {
+   final List<AiWriterRecord> records = [];
+   final ValueNotifier<List<String>> selectedSourcesNotifier;
+ 
++  void attachEditor(EditorState editorState) {
++    if (this.editorState == editorState) {
++      return;
++    }
++    _aiWriterCubitLog(
++      'Attach new editor state: ${identityHashCode(editorState)} (old: ${identityHashCode(this.editorState)})',
++    );
++    this.editorState = editorState;
++    _textRobot.editorState = editorState;
++  }
++
+   @override
+   Future<void> close() async {
+     selectedSourcesNotifier.dispose();
+@@ -101,6 +114,10 @@ class AiWriterCubit extends Cubit<AiWriterState> {
+     aiWriterNode = node;
+     onCreateNode?.call();
+ 
++    _aiWriterCubitLog(
++      'Registering AI node with editorState: ${identityHashCode(editorState)}',
++    );
++
+     await setAiWriterNodeIsInitialized(editorState, node);
+ 
+     final command = node.aiWriterCommand;
+@@ -139,6 +156,7 @@ class AiWriterCubit extends Cubit<AiWriterState> {
+           promptId,
+         );
+         break;
++      case AiWriterCommand.summarize:
+       case AiWriterCommand.fixSpellingAndGrammar:
+       case AiWriterCommand.improveWriting:
+       case AiWriterCommand.makeLonger:
+@@ -408,6 +426,10 @@ class AiWriterCubit extends Cubit<AiWriterState> {
+         onAppendToDocument?.call();
+       },
+       processAssistMessage: (text) async {
++        if (_handleAgentAction(text)) {
++          return;
++        }
++
+         if (state case final GeneratingAiWriterState generatingState) {
+           emit(
+             GeneratingAiWriterState(
+@@ -420,9 +442,7 @@ class AiWriterCubit extends Cubit<AiWriterState> {
+       },
+       onEnd: () async {
+         if (state case final GeneratingAiWriterState generatingState) {
+-          await _textRobot.stop(
+-            attributes: ApplySuggestionFormatType.replace.attributes,
+-          );
++          await _textRobot.persist();
+           emit(
+             ReadyAiWriterState(
+               command,
+@@ -504,6 +524,10 @@ class AiWriterCubit extends Cubit<AiWriterState> {
+         onAppendToDocument?.call();
+       },
+       processAssistMessage: (text) async {
++        if (_handleAgentAction(text)) {
++          return;
++        }
++
+         if (state case final GeneratingAiWriterState generatingState) {
+           emit(
+             GeneratingAiWriterState(
+@@ -516,9 +540,7 @@ class AiWriterCubit extends Cubit<AiWriterState> {
+       },
+       onEnd: () async {
+         if (state case final GeneratingAiWriterState generatingState) {
+-          await _textRobot.stop(
+-            attributes: ApplySuggestionFormatType.replace.attributes,
+-          );
++          await _textRobot.persist();
+           emit(
+             ReadyAiWriterState(
+               command,
+@@ -601,6 +623,10 @@ class AiWriterCubit extends Cubit<AiWriterState> {
+         );
+       },
+       processAssistMessage: (text) async {
++        if (_handleAgentAction(text)) {
++          return;
++        }
++
+         if (state case final GeneratingAiWriterState generatingState) {
+           emit(
+             GeneratingAiWriterState(
+@@ -617,9 +643,7 @@ class AiWriterCubit extends Cubit<AiWriterState> {
+       },
+       onEnd: () async {
+         if (state case final GeneratingAiWriterState generatingState) {
+-          await _textRobot.stop(
+-            attributes: ApplySuggestionFormatType.replace.attributes,
+-          );
++          await _textRobot.persist();
+           emit(
+             ReadyAiWriterState(
+               command,
+@@ -728,6 +752,58 @@ class AiWriterCubit extends Cubit<AiWriterState> {
+     }
+   }
+ 
++
++  bool _handleAgentAction(String text) {
++    try {
++      final data = json.decode(text);
++      if (data is Map && data.containsKey('action_type')) {
++        final actionType = data['action_type'];
++        if (actionType == 'create_database') {
++          final name = data['name'] ?? 'New Database';
++          _aiWriterCubitLog('Creating database: $name');
++          ViewBackendService.createView(
++            layoutType: ViewLayoutPB.Grid,
++            parentViewId: documentId,
++            name: name,
++          ).then((result) {
++            result.fold(
++              (view) => _aiWriterCubitLog('Database $name created successfully'),
++              (error) => _aiWriterCubitLog('Failed to create database $name: $error'),
++            );
++          });
++          return true;
++        } else if (actionType == 'insert_block') {
++          final content = data['message'] ?? '';
++          if (content.isNotEmpty) {
++            _aiWriterCubitLog('Inserting block: $content');
++            final selection = editorState.selection;
++            final transaction = editorState.transaction;
++            if (selection != null) {
++              transaction.insertNode(
++                selection.end.path.next,
++                paragraphNode(text: content),
++              );
++            } else {
++              // Fallback: insert at end of document
++              final lastNodePath = [editorState.document.root.children.length];
++              transaction.insertNode(
++                lastNodePath,
++                paragraphNode(text: content),
++              );
++            }
++            editorState.apply(transaction).then((_) {
++              _aiWriterCubitLog('Block inserted successfully via collab transaction');
++            });
++          }
++          return true;
++        }
++      }
++    } catch (e) {
++      // Ignored
++    }
++    return false;
++  }
++
+   void _aiWriterCubitLog(String message) {
+     if (_aiWriterCubitDebugLog) {
+       Log.debug('[AiWriterCubit] $message');
+diff --git a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/operations/ai_writer_entities.dart b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/operations/ai_writer_entities.dart
+index 372bc8d..3e640d4 100644
+--- a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/operations/ai_writer_entities.dart
++++ b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/operations/ai_writer_entities.dart
+@@ -57,7 +57,7 @@ enum SuggestionAction {
+ enum AiWriterCommand {
+   userQuestion,
+   explain,
+-  // summarize,
++  summarize,
+   continueWriting,
+   fixSpellingAndGrammar,
+   improveWriting,
+@@ -67,7 +67,7 @@ enum AiWriterCommand {
+   String defaultPrompt(String input) => switch (this) {
+         userQuestion => input,
+         explain => "Explain this phrase in a concise manner:\n\n$input",
+-        // summarize => '$input\n\nTl;dr',
++        summarize => '$input\n\nTl;dr',
+         continueWriting =>
+           'Continue writing based on this existing text:\n\n$input',
+         fixSpellingAndGrammar => 'Correct this to standard English:\n\n$input',
+@@ -79,7 +79,7 @@ enum AiWriterCommand {
+   String get i18n => switch (this) {
+         userQuestion => LocaleKeys.document_plugins_aiWriter_userQuestion.tr(),
+         explain => LocaleKeys.document_plugins_aiWriter_explain.tr(),
+-        // summarize => LocaleKeys.document_plugins_aiWriter_summarize.tr(),
++        summarize => LocaleKeys.document_plugins_aiWriter_summarize.tr(),
+         continueWriting =>
+           LocaleKeys.document_plugins_aiWriter_continueWriting.tr(),
+         fixSpellingAndGrammar =>
+@@ -93,7 +93,7 @@ enum AiWriterCommand {
+   FlowySvgData get icon => switch (this) {
+         userQuestion => FlowySvgs.toolbar_ai_ask_anything_m,
+         explain => FlowySvgs.toolbar_ai_explain_m,
+-        // summarize => FlowySvgs.ai_summarize_s,
++        summarize => FlowySvgs.ai_summarize_s,
+         continueWriting ||
+         improveWriting =>
+           FlowySvgs.toolbar_ai_improve_writing_m,
+@@ -105,7 +105,7 @@ enum AiWriterCommand {
+   CompletionTypePB toCompletionType() => switch (this) {
+         userQuestion => CompletionTypePB.UserQuestion,
+         explain => CompletionTypePB.ExplainSelected,
+-        // summarize => CompletionTypePB.Summarize,
++        summarize => CompletionTypePB.UserQuestion, // Placeholder path, intercepted by plugin
+         continueWriting => CompletionTypePB.ContinueWriting,
+         fixSpellingAndGrammar => CompletionTypePB.SpellingAndGrammar,
+         improveWriting => CompletionTypePB.ImproveWriting,
+diff --git a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/widgets/ai_writer_scroll_wrapper.dart b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/widgets/ai_writer_scroll_wrapper.dart
+index cc6e6d2..b42be06 100644
+--- a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/widgets/ai_writer_scroll_wrapper.dart
++++ b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/widgets/ai_writer_scroll_wrapper.dart
+@@ -55,6 +55,14 @@ class _AiWriterScrollWrapperState extends State<AiWriterScrollWrapper> {
+     overlayController.show();
+   }
+ 
++  @override
++  void didUpdateWidget(AiWriterScrollWrapper oldWidget) {
++    super.didUpdateWidget(oldWidget);
++    if (widget.editorState != oldWidget.editorState) {
++      aiWriterCubit.attachEditor(widget.editorState);
++    }
++  }
++
+   @override
+   void dispose() {
+     aiWriterCubit.close();
+diff --git a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/widgets/ai_writer_suggestion_actions.dart b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/widgets/ai_writer_suggestion_actions.dart
+index d39ede2..262aead 100644
+--- a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/widgets/ai_writer_suggestion_actions.dart
++++ b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/ai/widgets/ai_writer_suggestion_actions.dart
+@@ -44,6 +44,7 @@ class SuggestionActionBar extends StatelessWidget {
+             SuggestionAction.tryAgain,
+             SuggestionAction.close,
+           ],
++        AiWriterCommand.summarize ||
+         AiWriterCommand.fixSpellingAndGrammar ||
+         AiWriterCommand.improveWriting ||
+         AiWriterCommand.makeShorter ||
+diff --git a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/base/markdown_text_robot.dart b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/base/markdown_text_robot.dart
+index 259777d..daeb952 100644
+--- a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/base/markdown_text_robot.dart
++++ b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/base/markdown_text_robot.dart
+@@ -14,7 +14,7 @@ class MarkdownTextRobot {
+     required this.editorState,
+   });
+ 
+-  final EditorState editorState;
++  EditorState editorState;
+ 
+   final Lock _lock = Lock();
+ 
+diff --git a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/shortcuts/command_shortcuts.dart b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/shortcuts/command_shortcuts.dart
+index aedfcff..35c06f2 100644
+--- a/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/shortcuts/command_shortcuts.dart
++++ b/frontend/appflowy_flutter/lib/plugins/document/presentation/editor_plugins/shortcuts/command_shortcuts.dart
+@@ -9,6 +9,7 @@ import 'package:appflowy_editor/appflowy_editor.dart';
+ import 'package:appflowy_editor_plugins/appflowy_editor_plugins.dart';
+ import 'package:easy_localization/easy_localization.dart';
+ 
++import 'ai_shortcut_event.dart';
+ import 'exit_edit_mode_command.dart';
+ 
+ final List<CommandShortcutEvent> defaultCommandShortcutEvents = [
+@@ -60,6 +61,7 @@ List<CommandShortcutEvent> commandShortcutEvents = [
+     ),
+ 
+   emojiShortcutEvent,
++  aiShortcutEvent,
+ ];
+ 
+ final _codeBlockLocalization = CodeBlockLocalizations(
+diff --git a/frontend/appflowy_flutter/lib/workspace/presentation/home/desktop_home_screen.dart b/frontend/appflowy_flutter/lib/workspace/presentation/home/desktop_home_screen.dart
+index ea96ea1..35c4e76 100644
+--- a/frontend/appflowy_flutter/lib/workspace/presentation/home/desktop_home_screen.dart
++++ b/frontend/appflowy_flutter/lib/workspace/presentation/home/desktop_home_screen.dart
+@@ -35,6 +35,7 @@ import 'package:sized_context/sized_context.dart';
+ import 'package:styled_widget/styled_widget.dart';
+ 
+ import '../notifications/notification_panel.dart';
++import '../widgets/ai_chat/ai_chat_button.dart';
+ import '../widgets/edit_panel/edit_panel.dart';
+ import '../widgets/sidebar_resizer.dart';
+ import 'home_layout.dart';
+@@ -203,6 +204,10 @@ class DesktopHomeScreen extends StatelessWidget {
+       sidebar: sidebar,
+       editPanel: editPanel,
+       bubble: const QuestionBubble(),
++      aiChatButton: FloatingAiChatButton(
++        workspaceId: workspaceSetting.workspaceId,
++        currentViewId: workspaceSetting.latestView?.id ?? '',
++      ),
+       homeMenuResizer: homeMenuResizer,
+       notificationPanel: notificationPanel,
+       sliderHoverTrigger: sliderHoverTrigger,
+@@ -256,6 +261,7 @@ class DesktopHomeScreen extends StatelessWidget {
+     required Widget homeStack,
+     required Widget editPanel,
+     required Widget bubble,
++    required Widget aiChatButton,
+     required Widget homeMenuResizer,
+     required Widget notificationPanel,
+     required Widget sliderHoverTrigger,
+@@ -276,6 +282,7 @@ class DesktopHomeScreen extends StatelessWidget {
+         bubble
+             .positioned(right: 20, bottom: 16, animate: true)
+             .animate(layout.animDuration, Curves.easeOut),
++        aiChatButton,
+         editPanel
+             .animatedPanelX(
+               duration: layout.animDuration.inMilliseconds * 0.001,
+diff --git a/frontend/appflowy_flutter/macos/Runner.xcodeproj/project.pbxproj b/frontend/appflowy_flutter/macos/Runner.xcodeproj/project.pbxproj
+index 88c451b..3758c6a 100644
+--- a/frontend/appflowy_flutter/macos/Runner.xcodeproj/project.pbxproj
++++ b/frontend/appflowy_flutter/macos/Runner.xcodeproj/project.pbxproj
+@@ -429,7 +429,7 @@
+ 			isa = XCBuildConfiguration;
+ 			baseConfigurationReference = 33E5194F232828860026EE4D /* AppInfo.xcconfig */;
+ 			buildSettings = {
+-				ARCHS = "$(ARCHS_STANDARD)";
++				ARCHS = arm64;
+ 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+ 				CLANG_ENABLE_MODULES = YES;
+ 				CODE_SIGN_ENTITLEMENTS = Runner/DebugProfile.entitlements;
+@@ -444,7 +444,7 @@
+ 					"@executable_path/../Frameworks",
+ 				);
+ 				MACOSX_DEPLOYMENT_TARGET = 10.14;
+-				ONLY_ACTIVE_ARCH = YES;
++				ONLY_ACTIVE_ARCH = true;
+ 				PRODUCT_BUNDLE_IDENTIFIER = com.appflowy.appflowy.flutter;
+ 				PRODUCT_NAME = AppFlowy;
+ 				PROVISIONING_PROFILE_SPECIFIER = "";
+@@ -566,7 +566,7 @@
+ 			isa = XCBuildConfiguration;
+ 			baseConfigurationReference = 33E5194F232828860026EE4D /* AppInfo.xcconfig */;
+ 			buildSettings = {
+-				ARCHS = "$(ARCHS_STANDARD)";
++				ARCHS = arm64;
+ 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+ 				CLANG_ENABLE_MODULES = YES;
+ 				CODE_SIGN_ENTITLEMENTS = Runner/DebugProfile.entitlements;
+@@ -581,6 +581,7 @@
+ 					"@executable_path/../Frameworks",
+ 				);
+ 				MACOSX_DEPLOYMENT_TARGET = 10.14;
++				ONLY_ACTIVE_ARCH = true;
+ 				PRODUCT_BUNDLE_IDENTIFIER = com.appflowy.appflowy.flutter;
+ 				PRODUCT_NAME = AppFlowy;
+ 				PROVISIONING_PROFILE_SPECIFIER = "";
+@@ -594,7 +595,7 @@
+ 			isa = XCBuildConfiguration;
+ 			baseConfigurationReference = 33E5194F232828860026EE4D /* AppInfo.xcconfig */;
+ 			buildSettings = {
+-				ARCHS = "$(ARCHS_STANDARD)";
++				ARCHS = arm64;
+ 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+ 				CLANG_ENABLE_MODULES = YES;
+ 				CODE_SIGN_ENTITLEMENTS = Runner/Release.entitlements;
+@@ -609,7 +610,7 @@
+ 					"@executable_path/../Frameworks",
+ 				);
+ 				MACOSX_DEPLOYMENT_TARGET = 10.14;
+-				ONLY_ACTIVE_ARCH = YES;
++				ONLY_ACTIVE_ARCH = true;
+ 				PRODUCT_BUNDLE_IDENTIFIER = com.appflowy.appflowy.flutter;
+ 				PRODUCT_NAME = AppFlowy;
+ 				PROVISIONING_PROFILE_SPECIFIER = "";
+diff --git a/frontend/appflowy_flutter/packages/appflowy_ui/lib/src/component/textfield/textfield.dart b/frontend/appflowy_flutter/packages/appflowy_ui/lib/src/component/textfield/textfield.dart
+index e3d38ba..9d59b3a 100644
+--- a/frontend/appflowy_flutter/packages/appflowy_ui/lib/src/component/textfield/textfield.dart
++++ b/frontend/appflowy_flutter/packages/appflowy_ui/lib/src/component/textfield/textfield.dart
+@@ -34,6 +34,7 @@ class AFTextField extends StatefulWidget {
+     this.focusNode,
+     this.readOnly = false,
+     this.maxLength,
++    this.autofillHints,
+   });
+ 
+   /// The hint text to display when the text field is empty.
+@@ -87,6 +88,9 @@ class AFTextField extends StatefulWidget {
+   /// The maximum length of the text field.
+   final int? maxLength;
+ 
++  /// Autofill hints for the text field.
++  final Iterable<String>? autofillHints;
++
+   @override
+   State<AFTextField> createState() => _AFTextFieldState();
+ }
+@@ -187,6 +191,7 @@ class _AFTextFieldState extends AFTextFieldState {
+       onSubmitted: widget.onSubmitted,
+       autofocus: widget.autoFocus ?? false,
+       maxLength: widget.maxLength,
++      autofillHints: widget.autofillHints,
+       maxLengthEnforcement: MaxLengthEnforcement.truncateAfterCompositionEnds,
+       decoration: InputDecoration(
+         hintText: widget.hintText,
+diff --git a/frontend/rust-lib/flowy-ai/src/completion.rs b/frontend/rust-lib/flowy-ai/src/completion.rs
+index 24ba265..1bc2e24 100644
+--- a/frontend/rust-lib/flowy-ai/src/completion.rs
++++ b/frontend/rust-lib/flowy-ai/src/completion.rs
+@@ -14,6 +14,7 @@ use lib_infra::isolate_stream::IsolateSink;
+ 
+ use crate::stream_message::StreamMessage;
+ use flowy_ai_pub::user_service::AIUserService;
++use std::collections::HashMap;
+ use std::sync::{Arc, Weak};
+ use tokio::select;
+ use tracing::{error, info};
+@@ -126,16 +127,17 @@ impl CompletionTask {
+         let format = self.context.format.map(Into::into).unwrap_or_default();
+         if let Ok(object_id) = Uuid::from_str(&self.context.object_id) {
+           let params = CompleteTextParams {
+-            text: self.context.text,
++            text: self.context.text.clone(),
+             completion_type: Some(complete_type),
+             metadata: Some(CompletionMetadata {
+               object_id,
+               workspace_id: Some(self.workspace_id),
+-              rag_ids: Some(self.context.rag_ids),
++              rag_ids: Some(self.context.rag_ids.clone()),
+               completion_history,
+               custom_prompt: self
+                 .context
+                 .custom_prompt
++                .clone()
+                 .map(|v| CustomPrompt { system: v }),
+               prompt_id: self.context.prompt_id.clone(),
+             }),
+@@ -143,38 +145,19 @@ impl CompletionTask {
+           };
+ 
+           info!("start completion: {:?}", params);
+-          match cloud_service
+-            .stream_complete(&self.workspace_id, params, self.preferred_model)
+-            .await
+-          {
+-            Ok(mut stream) => loop {
+-              select! {
+-                  _ = self.stop_rx.recv() => {
+-                      return;
+-                  },
+-                  result = stream.next() => {
+-                    match result {
+-                      Some(Ok(data)) => {
+-                        match data {
+-                          CompletionStreamValue::Answer{ value } => {
+-                            let _ = sink.send(format!("data:{}", value)).await;
+-                          }
+-                           CompletionStreamValue::Comment{ value } => {
+-                            let _ = sink.send(format!("comment:{}", value)).await;
+-                          }
+-                        }
+-                      },
+-                      Some(Err(error)) => {
+-                          handle_error(&mut sink, error).await;
+-                          return;
+-                      },
+-                      None => {
+-                          let _ = sink.send(format!("finish:{}", self.task_id)).await;
+-                          return;
+-                      },
+-                    }
+-                  }
++          let mut context_map = HashMap::new();
++          context_map.insert("object_id".to_string(), serde_json::Value::String(self.context.object_id.clone()));
++          context_map.insert("workspace_id".to_string(), serde_json::Value::String(self.workspace_id.to_string()));
++
++          match crate::agent_bridge::execute_agent(self.context.text.clone(), context_map).await {
++            Ok(response) => {
++              let _ = sink.send(format!("data:{}", response.thought)).await;
++              for action in response.actions {
++                 if let Ok(action_str) = serde_json::to_string(&action) {
++                   let _ = sink.send(format!("comment:{}", action_str)).await;
++                 }
+               }
++              let _ = sink.send(format!("finish:{}", self.task_id)).await;
+             },
+             Err(error) => {
+               handle_error(&mut sink, error).await;
+diff --git a/frontend/rust-lib/flowy-ai/src/lib.rs b/frontend/rust-lib/flowy-ai/src/lib.rs
+index 771f037..70876d6 100644
+--- a/frontend/rust-lib/flowy-ai/src/lib.rs
++++ b/frontend/rust-lib/flowy-ai/src/lib.rs
+@@ -1,5 +1,6 @@
+ mod event_handler;
+ pub mod event_map;
++pub mod agent_bridge;
+ 
+ pub mod ai_manager;
+ mod chat;

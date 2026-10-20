@@ -1,0 +1,234 @@
+version: '3.8'
+
+services:
+  # ==========================================================================
+  # INFRASTRUCTURE SERVICES
+  # ==========================================================================
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: appflowy-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-appflowy_ai}
+      POSTGRES_USER: ${POSTGRES_USER:-appflowy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-appflowy_secure_2024}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-appflowy}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: appflowy-qdrant
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: appflowy-redis
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: appflowy-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: appflowy-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_secure_2024}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ==========================================================================
+  # APPLICATION SERVICES
+  # ==========================================================================
+
+  backend-service:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile.backend
+    container_name: appflowy-backend
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-appflowy}:${POSTGRES_PASSWORD:-appflowy_secure_2024}@postgres:5432/${POSTGRES_DB:-appflowy_ai}
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:8b}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
+      - AI_SERVICE_URL=http://ai-service:8001
+      - AGENT_WORKSPACE_PATH=/app/workspace
+      - AI_PROVIDER=${AI_PROVIDER:-ollama}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - workspace_data:/app/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile.ai
+    container_name: appflowy-ai
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-appflowy}:${POSTGRES_PASSWORD:-appflowy_secure_2024}@postgres:5432/${POSTGRES_DB:-appflowy_ai}
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:8b}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
+      - ORCHESTRATOR_URL=http://backend-service:8000
+      - AGENT_WORKSPACE_PATH=/app/workspace
+      - AI_PROVIDER=${AI_PROVIDER:-ollama}
+      - AI_MODEL=${AI_MODEL:-llama3:8b}
+      - AI_MAX_TOKENS=${AI_MAX_TOKENS:-4096}
+      - AI_TEMPERATURE=${AI_TEMPERATURE:-0.7}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minio}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minio_secure_2024}
+      - MINIO_BUCKET=${MINIO_BUCKET:-appflowy-ai}
+      - WHISPER_MODEL=${WHISPER_MODEL:-base}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN:-}
+      - JIRA_BASE_URL=${JIRA_BASE_URL:-}
+    ports:
+      - "8001:8001"
+    volumes:
+      - workspace_data:/app/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile.ai
+    container_name: appflowy-celery
+    command: celery -A agent.tasks.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-appflowy}:${POSTGRES_PASSWORD:-appflowy_secure_2024}@postgres:5432/${POSTGRES_DB:-appflowy_ai}
+      - QDRANT_URL=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3:8b}
+      - AI_PROVIDER=${AI_PROVIDER:-ollama}
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile.ai
+    container_name: appflowy-celery-beat
+    command: celery -A agent.tasks.celery_app beat --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-appflowy}:${POSTGRES_PASSWORD:-appflowy_secure_2024}@postgres:5432/${POSTGRES_DB:-appflowy_ai}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: appflowy-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend-service
+      - ai-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  redis_data:
+  ollama_data:
+  minio_data:
+  workspace_data:

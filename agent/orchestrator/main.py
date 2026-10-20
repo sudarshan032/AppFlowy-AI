@@ -19,7 +19,7 @@ from agent.orchestrator import context_resolver, projection
 app = FastAPI(title="Agent Orchestrator")
 
 # Workspace Path for context
-WORKSPACE_PATH = os.getenv("AGENT_WORKSPACE_PATH", "/Users/siddh/.gemini/antigravity/playground/volatile-belt/agent_inbox_test")
+WORKSPACE_PATH = os.getenv("AGENT_WORKSPACE_PATH", "/Users/siddh/Downloads/Projects/APPFlowy-notion Clone/agent_inbox_test")
 
 # CORS
 app.add_middleware(
@@ -52,6 +52,57 @@ def startup_event():
     # Base.metadata.create_all(bind=engine)
     pass
 
+@app.get("/")
+def root():
+    """Root endpoint for health check and API info."""
+    return {
+        "name": "Agent Orchestrator",
+        "version": "2.0.0",
+        "status": "running",
+        "endpoints": [
+            "/health",
+            "/run-prompt",
+            "/agent/execute",
+            "/databases",
+            "/logs",
+            "/context",
+            "/projection/render_all",
+            "/projection/render_db/{db_id}",
+            "/apply_patch"
+        ]
+    }
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint for Docker and load balancers."""
+    import time
+    health = {
+        "status": "healthy",
+        "timestamp": time.time(),
+        "service": "backend-orchestrator",
+        "version": "2.0.0",
+    }
+    # Check database connectivity
+    try:
+        db = next(get_db())
+        db.execute(db_service.select(db_service.Database).limit(1)) if hasattr(db_service, 'select') else None
+        db.close()
+        health["database"] = "connected"
+    except Exception as e:
+        health["database"] = f"error: {str(e)}"
+        health["status"] = "degraded"
+
+    # Check vector store
+    try:
+        vs_ok = vector_store_service.health_check()
+        health["qdrant"] = "connected" if vs_ok else "unavailable"
+    except Exception:
+        health["qdrant"] = "unavailable"
+
+    return health
+
+
 def process_prompt(user_text: str, context: Any, db: Session):
     """
     Core logic for processing a prompt and executing actions.
@@ -59,10 +110,48 @@ def process_prompt(user_text: str, context: Any, db: Session):
     print(f"Received prompt: {user_text}")
     log_event(f"Received prompt: {user_text}")
 
-    # 1. Parse intent with context
-    action_plan = llm_service.parse_action(user_text, context=context)
+    # 0. Fast path: writing keywords bypass LLM parse entirely (avoids double LLM call)
+    lower = user_text.lower().strip()
+    writing_fast_paths = [
+        ("explain this", "explain"),
+        ("explain ", "explain"),
+        ("summarize:", "summarize"),
+        ("summarize this", "summarize"),
+        ("summarise:", "summarize"),
+        ("summarise this", "summarize"),
+        ("improve writing", "improve_writing"),
+        ("improve this", "improve_writing"),
+        ("continue writing", "continue_writing"),
+        ("continue this", "continue_writing"),
+    ]
+    for keyword, fast_action in writing_fast_paths:
+        if lower.startswith(keyword):
+            log_event(f"Fast-path writing action: '{keyword}' → {fast_action}")
+            action_plan = {"action": fast_action, "params": {"text": user_text}}
+            break
+    else:
+        # 1. Parse intent with context
+        action_plan = llm_service.parse_action(user_text, context=context)
     print(f"Action Plan: {action_plan}")
     log_event(f"Action Plan: {action_plan}")
+
+    # Safety net: if LLM returns "none" but the prompt clearly matches a writing action,
+    # override with the correct action (LLM sometimes misclassifies these as general questions)
+    if not action_plan or action_plan.get("action") == "none":
+        lower = user_text.lower().strip()
+        writing_overrides = [
+            ("explain", "explain"),
+            ("summarize", "summarize"),
+            ("summarise", "summarize"),
+            ("improve", "improve_writing"),
+            ("rewrite", "improve_writing"),
+            ("continue writing", "continue_writing"),
+        ]
+        for keyword, override_action in writing_overrides:
+            if lower.startswith(keyword):
+                action_plan = {"action": override_action, "params": {"text": user_text}}
+                log_event(f"Override: LLM said none, keyword '{keyword}' matched → {override_action}")
+                break
 
     if not action_plan or action_plan.get("action") == "none":
         return {"status": "ignored", "details": action_plan.get("params", {})}
@@ -103,10 +192,11 @@ def process_prompt(user_text: str, context: Any, db: Session):
                     })
 
             result = {
-                "message": f"Database '{db_obj.name}' created.", 
-                "db_id": str(db_obj.id), 
+                "message": f"Database '{db_obj.name}' created.",
+                "db_id": str(db_obj.id),
                 "action_type": "create_database",
-                "properties": properties_list  # Include properties for AppFlowy
+                "properties": properties_list,
+                "icon": params.get("icon", ""),
             }
 
             
@@ -139,18 +229,197 @@ def process_prompt(user_text: str, context: Any, db: Session):
             result = {"matches": hits, "action_type": "display_results"}
             
         elif action == "apply_template":
-            template_name = params.get("template")
-            db_name = params.get("name")
-            
+            template_name = params.get("template") or params.get("template_name")
+            db_name = params.get("db_name") or params.get("name")
+            # If LLM put the template name under "name" and it matches a known template, use it
+            if not template_name and db_name:
+                from agent.templates.definitions import get_template
+                if get_template(db_name):
+                    template_name = db_name
+                    db_name = None
             if not template_name:
                 raise ValueError("Template name is required")
-                
+
             db_obj = logic.apply_template(template_name, db_name)
             result = {"message": f"Template '{template_name}' applied.", "db_id": str(db_obj.id), "action_type": "create_database"}
 
         elif action == "list_templates":
             templates = logic.list_templates()
             result = {"templates": templates}
+
+        # --- Writing Actions (use LLM directly) ---
+        elif action == "summarize":
+            text_to_summarize = params.get("text", user_text)
+            summary = llm_service.generate_text(f"Summarize this concisely:\n\n{text_to_summarize}")
+            result = {"response": summary, "action_type": "text_response"}
+
+        elif action == "improve_writing":
+            text_to_improve = params.get("text", user_text)
+            improved = llm_service.generate_text(f"Improve this writing for clarity and professionalism:\n\n{text_to_improve}")
+            result = {"response": improved, "action_type": "text_response"}
+
+        elif action == "explain":
+            text_to_explain = params.get("text", user_text)
+            explanation = llm_service.generate_text(f"Explain this in simple terms:\n\n{text_to_explain}")
+            result = {"response": explanation, "action_type": "text_response"}
+
+        # --- Schema Modification Actions ---
+        elif action == "drop_property":
+            db_name = params.get("db_name")
+            prop_name = params.get("property_name") or params.get("prop_name") or params.get("name")
+            
+            if not db_name:
+                raise ValueError("Database name is required")
+            if not prop_name:
+                raise ValueError("Property name is required")
+            
+            db_obj = db_service.get_database_by_name(db, db_name)
+            if not db_obj:
+                raise ValueError(f"Database '{db_name}' not found")
+            
+            success = logic.drop_property(db_obj.id, prop_name)
+            if success:
+                result = {"message": f"Column '{prop_name}' dropped from '{db_name}'.", "action_type": "drop_field",
+                          "field_name": prop_name, "db_name": db_name}
+            else:
+                result = {"message": f"Column '{prop_name}' not found in '{db_name}'.", "action_type": "error"}
+
+        elif action == "rename_property":
+            db_name = params.get("db_name")
+            old_name = params.get("old_name")
+            new_name = params.get("new_name")
+            
+            if not db_name:
+                raise ValueError("Database name is required")
+            if not old_name or not new_name:
+                raise ValueError("Both old_name and new_name are required")
+            
+            db_obj = db_service.get_database_by_name(db, db_name)
+            if not db_obj:
+                raise ValueError(f"Database '{db_name}' not found")
+            
+            prop = logic.rename_property(db_obj.id, old_name, new_name)
+            if prop:
+                result = {"message": f"Column '{old_name}' renamed to '{new_name}' in '{db_name}'.", "action_type": "rename_field",
+                          "old_name": old_name, "new_name": new_name, "db_name": db_name}
+            else:
+                result = {"message": f"Column '{old_name}' not found in '{db_name}'.", "action_type": "error"}
+
+        elif action == "list_properties":
+            db_name = params.get("db_name")
+            
+            if not db_name:
+                raise ValueError("Database name is required")
+            
+            db_obj = db_service.get_database_by_name(db, db_name)
+            if not db_obj:
+                raise ValueError(f"Database '{db_name}' not found")
+            
+            props = logic.list_properties(db_obj.id)
+            prop_list = [{"name": p.name, "type": p.type} for p in props]
+            result = {"message": f"Database '{db_name}' has {len(prop_list)} columns.", "properties": prop_list, "action_type": "list_fields"}
+
+        elif action == "add_property":
+            # Handle add_property with alternative param names from LLM
+            db_name = params.get("db_name")
+            prop_name = params.get("property_name") or params.get("name")
+            prop_type = params.get("property_type") or params.get("type") or "text"
+            options = params.get("options")
+
+            if not db_name:
+                raise ValueError("Database name is required")
+            if not prop_name:
+                raise ValueError("Property name is required")
+
+            db_obj = db_service.get_database_by_name(db, db_name)
+            if not db_obj:
+                raise ValueError(f"Database '{db_name}' not found")
+
+            prop = logic.add_property(db_obj.id, prop_name, prop_type, options)
+            result = {"message": f"Column '{prop_name}' ({prop_type}) added to '{db_name}'.", "action_type": "add_field",
+                      "field_name": prop_name, "field_type": prop_type, "db_name": db_name}
+
+        elif action == "edit_record":
+            db_name = params.get("db_name")
+            record_id = params.get("record_id")
+            data = params.get("data", {})
+
+            if not db_name:
+                raise ValueError("Database name is required")
+            if not record_id:
+                raise ValueError("Record ID is required")
+
+            db_obj = db_service.get_database_by_name(db, db_name)
+            if not db_obj:
+                raise ValueError(f"Database '{db_name}' not found")
+
+            rec_uuid = uuid.UUID(record_id)
+            logic.edit_record(rec_uuid, data)
+            result = {"message": f"Record updated in '{db_name}'.", "action_type": "edit_record", "db_name": db_name}
+
+        elif action == "delete_record":
+            db_name = params.get("db_name")
+            record_id = params.get("record_id")
+
+            if not db_name:
+                raise ValueError("Database name is required")
+            if not record_id:
+                raise ValueError("Record ID is required")
+
+            db_obj = db_service.get_database_by_name(db, db_name)
+            if not db_obj:
+                raise ValueError(f"Database '{db_name}' not found")
+
+            rec_uuid = uuid.UUID(record_id)
+            success = logic.delete_record(db_obj.id, rec_uuid)
+            if success:
+                result = {"message": f"Record deleted from '{db_name}'.", "action_type": "delete_record", "db_name": db_name}
+            else:
+                result = {"message": f"Record not found in '{db_name}'.", "action_type": "error"}
+
+        elif action == "delete_database":
+            db_name = params.get("db_name") or params.get("name")
+
+            if not db_name:
+                raise ValueError("Database name is required")
+
+            db_obj = db_service.get_database_by_name(db, db_name)
+            if not db_obj:
+                raise ValueError(f"Database '{db_name}' not found")
+
+            success = logic.delete_database(db_obj.id)
+            if success:
+                result = {"message": f"Database '{db_name}' deleted.", "action_type": "delete_database", "db_name": db_name}
+            else:
+                result = {"message": f"Failed to delete '{db_name}'.", "action_type": "error"}
+
+        elif action == "continue_writing":
+            text = params.get("text", user_text)
+            continued = llm_service.generate_text(f"Continue writing from where this text leaves off. Write 2-3 more paragraphs in the same style and tone:\n\n{text}")
+            result = {"response": continued, "action_type": "text_response"}
+
+        elif action == "create_page":
+            title = params.get("title", "Untitled")
+            description = params.get("description", "")
+            icon = params.get("icon", "📄")
+
+            content = llm_service.generate_page_content(title, description)
+
+            # Store in SQL
+            from agent.db.service import create_page
+            page = create_page(db, title=title, icon=icon, content=content)
+
+            # Project to markdown
+            projection.write_page(db, page.id)
+
+            result = {
+                "message": f"Page '{title}' created.",
+                "action_type": "create_page",
+                "title": title,
+                "icon": icon,
+                "content": content,
+                "page_id": str(page.id)
+            }
 
         else:
             result = {"status": "unknown_action", "action": action}
@@ -230,7 +499,11 @@ def render_db(db_id: str, db: Session = Depends(get_db)):
     Regenerates markdown for a specific database.
     """
     try:
-        projection.write_db_page(db, db_id)
+        db_uuid = uuid.UUID(db_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid database ID format")
+    try:
+        projection.write_db_page(db, db_uuid)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -253,17 +526,19 @@ def apply_patch(payload: Dict[str, Any], db: Session = Depends(get_db)):
         record = db_service.get_record(db, rec_uuid)
         if not record:
             raise HTTPException(status_code=404, detail="Record not found")
-            
+
         # Merge patch into existing data
         new_data = record.data.copy() if record.data else {}
         new_data.update(patch)
-        
+
         # Update in SQL
         db_service.update_record(db, rec_uuid, new_data)
-        
+
         # Re-project to keep MD in sync
         projection.write_record_page(db, rec_uuid)
-        
+
         return {"status": "success"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

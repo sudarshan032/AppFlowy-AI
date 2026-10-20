@@ -31,6 +31,77 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
             {"name": "Tags", "type": "multi_select", "options": ["Personal", "Work", "Ideas"]},
             {"name": "Created", "type": "date"}
         ]
+    },
+    "meeting_notes": {
+        "name": "Meeting Notes",
+        "description": "Track meeting agendas and action items",
+        "properties": [
+            {"name": "Meeting Title", "type": "text"},
+            {"name": "Date", "type": "date"},
+            {"name": "Attendees", "type": "text"},
+            {"name": "Agenda", "type": "text"},
+            {"name": "Action Items", "type": "text"},
+            {"name": "Status", "type": "select", "options": ["Scheduled", "Completed", "Cancelled"]}
+        ]
+    },
+    "journal": {
+        "name": "Journal",
+        "description": "Daily journal entries",
+        "properties": [
+            {"name": "Date", "type": "date"},
+            {"name": "Mood", "type": "select", "options": ["Great", "Good", "Okay", "Bad"]},
+            {"name": "Entry", "type": "text"},
+            {"name": "Gratitude", "type": "text"},
+            {"name": "Goals", "type": "text"}
+        ]
+    },
+    "contacts": {
+        "name": "Contacts",
+        "description": "Contact directory",
+        "properties": [
+            {"name": "Name", "type": "text"},
+            {"name": "Email", "type": "text"},
+            {"name": "Phone", "type": "text"},
+            {"name": "Company", "type": "text"},
+            {"name": "Role", "type": "text"},
+            {"name": "Last Contact", "type": "date"},
+            {"name": "Notes", "type": "text"}
+        ]
+    },
+    "inventory": {
+        "name": "Inventory",
+        "description": "Track inventory items and stock levels",
+        "properties": [
+            {"name": "Item Name", "type": "text"},
+            {"name": "SKU", "type": "text"},
+            {"name": "Quantity", "type": "number"},
+            {"name": "Price", "type": "number"},
+            {"name": "Category", "type": "select", "options": ["Electronics", "Office", "Materials", "Other"]},
+            {"name": "Reorder", "type": "checkbox"}
+        ]
+    },
+    "reading_list": {
+        "name": "Reading List",
+        "description": "Track books and articles to read",
+        "properties": [
+            {"name": "Title", "type": "text"},
+            {"name": "Author", "type": "text"},
+            {"name": "URL", "type": "url"},
+            {"name": "Status", "type": "select", "options": ["To Read", "Reading", "Finished"]},
+            {"name": "Rating", "type": "number"},
+            {"name": "Notes", "type": "text"}
+        ]
+    },
+    "wiki": {
+        "name": "Wiki",
+        "description": "Team knowledge base",
+        "properties": [
+            {"name": "Title", "type": "text"},
+            {"name": "Category", "type": "select", "options": ["Engineering", "Product", "Design", "Operations"]},
+            {"name": "Content", "type": "text"},
+            {"name": "Last Updated", "type": "date"},
+            {"name": "Author", "type": "text"}
+        ]
     }
 }
 

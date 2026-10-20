@@ -1,0 +1,13 @@
+FROM nginx:alpine
+
+# Copy a static index.html as placeholder (Flutter web build should replace this)
+RUN mkdir -p /usr/share/nginx/html
+
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Create a basic index.html placeholder
+RUN echo '<!DOCTYPE html><html><head><title>AppFlowy AI</title><style>body{font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a2e;color:#e6e6e6}div{text-align:center}h1{color:#6c63ff}a{color:#6c63ff}</style></head><body><div><h1>AppFlowy AI</h1><p>Notion AI Clone - Local First, Privacy Preserving</p><p>Backend API: <a href="http://localhost:8000/docs">:8000/docs</a></p><p>AI Service: <a href="http://localhost:8001/docs">:8001/docs</a></p></div></body></html>' > /usr/share/nginx/html/index.html
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

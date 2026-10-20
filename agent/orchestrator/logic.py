@@ -2,6 +2,8 @@ from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 import uuid
 import json
+import shutil
+import os
 
 from agent.db import service as db_service
 from agent.orchestrator.embeddings import EmbeddingsService
@@ -88,3 +90,85 @@ class AgentLogic:
         query_embedding = self.embeddings_service.embed_query(query)
         results = self.vector_store.search(query_embedding, top_k=limit)
         return results
+
+    def drop_property(self, db_id: uuid.UUID, prop_name: str) -> bool:
+        """Drop/delete a property (column) from a database."""
+        success = db_service.delete_property(self.db_session, db_id, prop_name)
+        if success:
+            projection.write_db_page(self.db_session, db_id)
+        return success
+
+    def rename_property(self, db_id: uuid.UUID, old_name: str, new_name: str):
+        """Rename a property in a database."""
+        prop = db_service.rename_property(self.db_session, db_id, old_name, new_name)
+        if prop:
+            projection.write_db_page(self.db_session, db_id)
+        return prop
+
+    def list_properties(self, db_id: uuid.UUID):
+        """List all properties (columns) in a database."""
+        return db_service.list_properties(self.db_session, db_id)
+
+    def edit_record(self, record_id: uuid.UUID, data: Dict[str, Any]):
+        """Merge new data into an existing record, update embedding and projection."""
+        record = db_service.get_record(self.db_session, record_id)
+        if not record:
+            raise ValueError(f"Record '{record_id}' not found")
+
+        merged = record.data.copy() if record.data else {}
+        merged.update(data)
+        db_service.update_record(self.db_session, record_id, merged)
+
+        # Re-embed
+        text_repr = "\n".join([f"{k}: {v}" for k, v in merged.items()])
+        embedding = self.embeddings_service.embed_text(text_repr)
+        if embedding:
+            self.vector_store.add_record(
+                record_id=str(record_id),
+                text=text_repr,
+                embedding=embedding,
+                metadata={"db_id": str(record.db_id)}
+            )
+
+        projection.write_db_page(self.db_session, record.db_id)
+        return record
+
+    def delete_record(self, db_id: uuid.UUID, record_id: uuid.UUID) -> bool:
+        """Delete a record from SQL + vector store, re-project."""
+        # Remove from vector store (ignore errors if not found)
+        try:
+            self.vector_store.delete_record(str(record_id))
+        except Exception:
+            pass
+
+        success = db_service.delete_record(self.db_session, record_id)
+        if success:
+            projection.write_db_page(self.db_session, db_id)
+        return success
+
+    def delete_database(self, db_id: uuid.UUID) -> bool:
+        """Delete a database, clean vector store entries, remove projection folder."""
+        db_obj = db_service.get_database(self.db_session, db_id)
+        if not db_obj:
+            return False
+
+        db_name = db_obj.name
+
+        # Clean vector store entries for all records in this database
+        records = db_service.list_records(self.db_session, db_id)
+        for r in records:
+            try:
+                self.vector_store.delete_record(str(r.id))
+            except Exception:
+                pass
+
+        # Delete from SQL (cascade handles properties, records, embeddings)
+        db_service.delete_database(self.db_session, db_id)
+
+        # Remove projection folder
+        folder = os.path.join(projection.APPFLOWY_DB_FOLDER, db_name)
+        if os.path.exists(folder):
+            shutil.rmtree(folder)
+
+        return True
+

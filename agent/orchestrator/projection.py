@@ -6,7 +6,7 @@ from agent.db import service as db_service
 from agent.utils.markdown import yaml_frontmatter, escape_markdown
 
 # Default folder if not set via ENV
-APPFLOWY_DB_FOLDER = os.getenv("APPFLOWY_DB_FOLDER", "/Users/siddh/.gemini/antigravity/playground/volatile-belt/agent_inbox_test/Agent Outputs/Databases")
+APPFLOWY_DB_FOLDER = os.getenv("APPFLOWY_DB_FOLDER", "/Users/siddh/Downloads/Projects/APPFlowy-notion Clone/agent_inbox_test/Agent Outputs/Databases")
 
 def _atomic_write(path: str, content: str):
     """
@@ -127,3 +127,57 @@ def write_record_page(db_session, record_id: str):
     
     # Update index page to reflect changes
     write_db_page(db_session, db_obj.id)
+
+# --- Page Projection ---
+
+APPFLOWY_PAGES_FOLDER = os.getenv("APPFLOWY_PAGES_FOLDER",
+    os.path.join(os.path.dirname(APPFLOWY_DB_FOLDER), "Pages"))
+
+def render_page_as_markdown(page_obj) -> str:
+    """Converts structured page content blocks to markdown with frontmatter."""
+    fm = {
+        "agent_managed": True,
+        "page_type": "page",
+        "page_id": str(page_obj.id),
+        "icon": page_obj.icon or "",
+        "last_synced": datetime.utcnow().isoformat() + "Z",
+    }
+
+    md = yaml_frontmatter(fm)
+    md += f"# {page_obj.title}\n\n"
+
+    content = page_obj.content if isinstance(page_obj.content, dict) else {}
+    blocks = content.get("blocks", [])
+
+    for block in blocks:
+        btype = block.get("type", "")
+        if btype == "heading":
+            level = block.get("level", 1)
+            prefix = "#" * level
+            md += f"{prefix} {block.get('text', '')}\n\n"
+        elif btype == "paragraph":
+            md += f"{block.get('text', '')}\n\n"
+        elif btype == "bullet_list":
+            for item in block.get("items", []):
+                md += f"- {item}\n"
+            md += "\n"
+        elif btype == "todo":
+            checked = "x" if block.get("checked") else " "
+            md += f"- [{checked}] {block.get('text', '')}\n"
+        else:
+            text = block.get("text", "")
+            if text:
+                md += f"{text}\n\n"
+
+    return md
+
+def write_page(db_session, page_id: str):
+    """Writes a page to the Pages output folder."""
+    page_obj = db_service.get_page(db_session, page_id)
+    if not page_obj:
+        return
+
+    slug = page_obj.title.replace(" ", "_").replace("/", "_")
+    path = os.path.join(APPFLOWY_PAGES_FOLDER, f"{slug}.md")
+    content = render_page_as_markdown(page_obj)
+    _atomic_write(path, content)

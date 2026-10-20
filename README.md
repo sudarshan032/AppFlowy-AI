@@ -1,4 +1,4 @@
-# AppFlowy AI: Intelligent Workspace Orchestration 🚀
+# APPFlowy-notion Clone 🚀
 
 Integrating local-first productivity with powerful LLM orchestration. This project embeds an AI Assistant directly into AppFlowy to automate database creation, data structuring, and workspace management.
 
